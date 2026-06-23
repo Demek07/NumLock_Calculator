@@ -1142,7 +1142,7 @@ class AboutDialog(QDialog):
         desc = QLabel(
             "Создатель: d_e_m_e_k<br>"
             "На основе кода Андрей Кудлай<br>"
-            'Сайт: <a href="http://akudlay.ru/" style="color:#4a90e2; text-decoration:none;">akudlay.ru</a>'
+            'GitHub: <a href="https://github.com/Akudlay-ru/CalcNumLock" style="color:#4a90e2; text-decoration:none;">CalcNumLock</a>'
         )
         desc.setAlignment(Qt.AlignCenter)
         desc.setWordWrap(True)
