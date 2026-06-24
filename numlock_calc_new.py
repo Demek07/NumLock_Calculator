@@ -318,15 +318,16 @@ class HistoryDialog(QDialog):
         self.setWindowTitle("История вычислений")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.setMinimumSize(400, 300)
+
         self.setStyleSheet("""
             QDialog {
-                background: #1e1e1e;
-                color: #eee;
+                background: #eee;
+                color: #000000;
             }
             QListWidget {
-                background: #2a2a2a;
-                color: #eee;
-                border: 1px solid #555;
+                background: #eee;
+                color: #000000;
+                border: 2px solid #0078d7;
                 border-radius: 4px;
                 font-family: Consolas, monospace;
                 font-size: 13px;
@@ -334,21 +335,21 @@ class HistoryDialog(QDialog):
             }
             QListWidget::item {
                 padding: 4px 8px;
-                border-bottom: 1px solid #333;
+                border-bottom: 1px solid #0078d7;
             }
             QListWidget::item:selected {
                 background: #0078d7;
                 color: white;
             }
             QPushButton {
-                background: #2a2a2a;
-                color: #eee;
-                border: 1px solid #555;
+                background: #eee;
+                color: #000000;
+                border: 1px solid #0078d7;
                 border-radius: 4px;
                 padding: 6px 16px;
             }
             QPushButton:hover {
-                background: #383838;
+                background: #0078d7;
             }
             QLabel {
                 color: #aaa;
@@ -359,8 +360,8 @@ class HistoryDialog(QDialog):
         self.selected_item = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(16, 0, 16, 16)
+        layout.setSpacing(8)
 
         # Заголовок
         title = QLabel(f"История ({len(history_list)} записей)")
@@ -449,7 +450,7 @@ class MiniCalcWindow(QWidget):
                 font-weight: bold;
             }
             QLabel:hover {
-                color: #eee;
+                color: #0078d7;
             }
         """)
         self.drag_label.setAlignment(Qt.AlignCenter)
@@ -462,9 +463,9 @@ class MiniCalcWindow(QWidget):
         self.input_field.setPlaceholderText("Введите выражение (например, 2,2+3,8)")
         self.input_field.setStyleSheet("""
             QLineEdit {
-                background: #2a2a2a;
-                color: #ffffff;
-                border: 2px solid #555;
+                background: #eee;
+                color: #000000;
+                border: 2px solid #0078d7;
                 border-radius: 4px;
                 padding: 3px 10px;
                 font-size: 14px;
@@ -472,7 +473,7 @@ class MiniCalcWindow(QWidget):
                 selection-background-color: #0078d7;
             }
             QLineEdit:focus {
-                border: 2px solid #0078d7;
+                border: 3px solid #0078d7;
             }
         """)
         self.input_field.returnPressed.connect(self.calculate)
@@ -493,7 +494,7 @@ class MiniCalcWindow(QWidget):
             }
             QPushButton:hover {
                 color: #eee;
-                background: rgba(255,255,255,10);
+                background: #0078d7;
             }
         """)
         self.btn_history.clicked.connect(self.show_history)
