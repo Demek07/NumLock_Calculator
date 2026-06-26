@@ -32,7 +32,7 @@ import sys
 import time
 import re
 import os
-import winshell
+import subprocess
 from pathlib import Path
 
 import keyboard
@@ -54,7 +54,7 @@ from PyQt5.QtWidgets import (
 )
 
 # Импорт иконки из отдельного файла
-from numlock_calc_icon import ICON_B64
+from numlockcalc_icon8 import ICON_B64
 
 # ---------------------------------------------------------------------------
 # Конфигурация
@@ -228,84 +228,129 @@ def round_number(num_str: str, decimals: int = 4) -> str:
 
     return result
 
+# -----------------------------------------------------------------------
+# Функции для автозагрузки (без winshell — работает в .py и .exe)
+# -----------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Функции для автозагрузки
-# ---------------------------------------------------------------------------
+
 def get_startup_folder() -> Path:
     """Возвращает путь к папке автозагрузки текущего пользователя."""
-    return Path(winshell.startup())
+    try:
+        return Path.home() / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    except Exception:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(260)
+        ctypes.windll.shell32.SHGetFolderPathW(None, 0x19, None, 0, buf)
+        return Path(buf.value) / "Programs" / "Startup"
 
 
 def get_shortcut_path() -> Path:
-    """Возвращает путь к ярлыку в автозагрузке."""
     startup = get_startup_folder()
-    # Определяем имя файла для ярлыка
     if getattr(sys, 'frozen', False):
-        # Запущено как exe
         exe_name = Path(sys.executable).name
         shortcut_name = exe_name.replace('.exe', '.lnk')
     else:
-        # Запущено как скрипт
         shortcut_name = f"{APP_NAME}.lnk"
     return startup / shortcut_name
 
 
 def is_autostart_enabled() -> bool:
-    """Проверяет, добавлена ли программа в автозагрузку."""
-    shortcut = get_shortcut_path()
-    return shortcut.exists()
-
-
-def add_to_autostart():
-    """Добавляет программу в автозагрузку."""
     try:
-        shortcut = get_shortcut_path()
+        return get_shortcut_path().exists()
+    except Exception:
+        return False
 
-        # Определяем путь к исполняемому файлу
+
+def add_to_autostart() -> bool:
+    try:
+        startup_folder = get_startup_folder()
+        shortcut_path = get_shortcut_path()
+
+        # Проверяем, существует ли папка
+        startup_folder.mkdir(parents=True, exist_ok=True)
+
+        # Определяем целевой файл и параметры
         if getattr(sys, 'frozen', False):
             # Запущено как exe
             target = sys.executable
+            working_dir = str(APP_ROOT)
+            script = f'''
+            $shell = New-Object -ComObject WScript.Shell;
+            $shortcut = $shell.CreateShortCut("{shortcut_path}");
+            $shortcut.TargetPath = "{target}";
+            $shortcut.WorkingDirectory = "{working_dir}";
+            $shortcut.Description = "{APP_NAME}";
+            $shortcut.Save();
+            '''
         else:
-            # Запущено как скрипт - используем pythonw.exe
-            # Находим pythonw.exe
             python_dir = Path(sys.executable).parent
             pythonw = python_dir / "pythonw.exe"
-            if pythonw.exists():
-                target = str(pythonw)
-                arguments = f'"{sys.argv[0]}"'
-            else:
-                target = sys.executable
-                arguments = f'"{sys.argv[0]}"'
+            target = str(pythonw if pythonw.exists() else sys.executable)
+            script_path = Path(sys.argv[0]).resolve()
+            working_dir = str(APP_ROOT)
+            script = f'''
+            $shell = New-Object -ComObject WScript.Shell;
+            $shortcut = $shell.CreateShortCut("{shortcut_path}");
+            $shortcut.TargetPath = "{target}";
+            $shortcut.Arguments = "{script_path}";
+            $shortcut.WorkingDirectory = "{working_dir}";
+            $shortcut.Description = "{APP_NAME}";
+            $shortcut.Save();
+            '''
 
-        # Получаем иконку из текущего exe
-        icon_location = sys.executable if getattr(sys, 'frozen', False) else None
+        # Оборачиваем в try/catch и используем -WindowStyle Hidden
+        full_script = f"""
+        try {{
+            {script}
+        }} catch {{
+            Write-Error $_.Exception.Message;
+            exit 1;
+        }}
+        exit 0;
+        """
 
-        # Создаем ярлык
-        with winshell.shortcut(str(shortcut)) as link:
-            link.path = target
-            link.arguments = arguments
-            link.working_directory = str(APP_ROOT)
-            link.description = APP_NAME
-            if icon_location:
-                link.icon_location = (icon_location, 0)
+        # Запускаем PowerShell без окна
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-WindowStyle", "Hidden",
+                "-Command", full_script
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False
+        )
+
+        if result.returncode != 0:
+            print(f"[ERROR] PowerShell exit code: {result.returncode}")
+            if result.stderr:
+                print(f"[ERROR] PowerShell stderr: {result.stderr}")
+            return False
 
         return True
+
+    except subprocess.TimeoutExpired:
+        print("[ERROR] PowerShell timed out")
+        return False
     except Exception as e:
-        print(f"Error adding to autostart: {e}")
+        import traceback
+        print(f"[ERROR] add_to_autostart: {e}")
+        traceback.print_exc()
         return False
 
 
-def remove_from_autostart():
-    """Удаляет программу из автозагрузки."""
+def remove_from_autostart() -> bool:
     try:
-        shortcut = get_shortcut_path()
-        if shortcut.exists():
-            shortcut.unlink()
+        shortcut_path = get_shortcut_path()
+        if shortcut_path.exists():
+            shortcut_path.unlink()
             return True
         return False
     except Exception as e:
-        print(f"Error removing from autostart: {e}")
+        print(f"[ERROR] remove_from_autostart: {e}")
         return False
 
 
