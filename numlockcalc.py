@@ -1141,6 +1141,19 @@ class CalcTrayApp(QWidget):
     # ------------------------------------------------------------------
     # Логика показа/скрытия калькулятора
     # ------------------------------------------------------------------
+    def _do_mouse_toggle(self):
+        """Переключение окна по клику мышкой."""
+        window = self.calc_window
+        if window.isVisible():
+            window.hide_to_tray()
+        else:
+            window.show()
+            window.raise_()
+            window.activateWindow()
+            window.input_field.setFocus()
+            if not window.is_result_displayed:
+                window.input_field.selectAll()
+
     def _do_toggle(self):
         window = self.calc_window
 
@@ -1161,10 +1174,18 @@ class CalcTrayApp(QWidget):
                 if not window.is_result_displayed:
                     window.input_field.selectAll()
 
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self._do_mouse_toggle()
+        elif reason == QSystemTrayIcon.Context:
+            self.autostart_action.setChecked(is_autostart_enabled())
+            self.tray.contextMenu().popup(QtGui.QCursor.pos())
 
 # ---------------------------------------------------------------------------
 # Диалог «О программе»
 # ---------------------------------------------------------------------------
+
+
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
