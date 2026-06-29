@@ -54,7 +54,7 @@ from PyQt5.QtWidgets import (
 )
 
 # Импорт иконки из отдельного файла
-from numlockcalc_icon8 import ICON_B64
+from numlockcalc_icon import ICON_B64
 
 # ---------------------------------------------------------------------------
 # Конфигурация
@@ -374,7 +374,8 @@ class HistoryDialog(QDialog):
                 color: #000000;
                 border: 2px solid #0078d7;
                 border-radius: 4px;
-                font-family: Consolas, monospace;
+                font-family: Arial, sans-serif;
+                font-weight: bold;
                 font-size: 13px;
                 padding: 5px;
             }
@@ -513,8 +514,9 @@ class MiniCalcWindow(QWidget):
                 border: 2px solid #0078d7;
                 border-radius: 4px;
                 padding: 3px 10px;
-                font-size: 14px;
-                font-family: Consolas, monospace;
+                font-size: 13px;
+                font-family: Arial, sans-serif;
+                font-weight: bold;
                 selection-background-color: #0078d7;
             }
             QLineEdit:focus {
