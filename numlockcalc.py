@@ -673,29 +673,32 @@ class MiniCalcWindow(QWidget):
         if self.processing_operator:
             return
 
-        if not self.is_result_displayed:
+        # Если результат отображается и текст изменился — обрезаем результат при удалении
+        if self.is_result_displayed and text != self.last_text:
+            # Если в тексте нет '=', или '=' не на конце → убираем результат
+            if '=' not in text or text.find('=') < len(text) - 1:
+                # Удаляем всё после последнего '=' или всё после expression
+                if '=' in text:
+                    eq_pos = text.rfind('=')
+                    current_expr = text[:eq_pos]
+                else:
+                    current_expr = self.last_expression or ""
+
+                # Если expression не пусто — ставим его в поле
+                if current_expr:
+                    self.processing_operator = True
+                    self.input_field.setText(current_expr)
+                    self.is_result_displayed = False
+                    self.last_text = current_expr
+                    self.input_field.setFocus()
+                    self.input_field.setCursorPosition(len(current_expr))
+                    self.processing_operator = False
+                    return
+
             self.last_text = text
             return
 
-        if text == self.last_text:
-            return
-
-        if len(text) > len(self.last_text):
-            added = text[len(self.last_text):]
-            if added in '+-*/%^':
-                if self.last_result and self.last_result in text:
-                    pos = text.find(self.last_result)
-                    if pos >= 0:
-                        self.processing_operator = True
-                        new_text = self.last_result + added
-                        self.input_field.setText(new_text)
-                        self.is_result_displayed = False
-                        self.last_text = new_text
-                        self.input_field.setFocus()
-                        self.input_field.setCursorPosition(len(new_text))
-                        self.processing_operator = False
-                        return
-
+        # Для обычного ввода (не отображается результат)
         self.last_text = text
 
     def _normalize_expression(self, expression: str) -> str:
@@ -899,23 +902,35 @@ class MiniCalcWindow(QWidget):
         """Вычисляет выражение и показывает результат."""
         current_text = self.input_field.text().strip()
 
-        # Если в поле уже есть результат (только число, без '=')
-        if self.is_result_displayed and current_text == self.last_result:
-            self.input_field.setCursorPosition(len(current_text))
-            self.is_result_displayed = False
-            self.last_text = current_text
-            return
+        # --- Сценарий: уже отображается результат (например, "10" или "5+5=10") ---
+        if self.is_result_displayed:
+            # Если поле содержит только результат (число), и Enter нажат → просто оставляем результат
+            if current_text == self.last_result and '=' not in current_text:
+                # Уже на результате → ничего не меняем, просто фокус и позиция
+                self.input_field.setCursorPosition(len(current_text))
+                self.is_result_displayed = True  # оставляем как есть
+                self.last_text = current_text
+                return
 
-        # Если в поле есть выражение с результатом (содержит '=')
-        if '=' in current_text:
-            if self.is_result_displayed:
-                if self.last_result:
+            # Если поле содержит выражение с результатом (например, "5+5=10") → убираем "=10"
+            if '=' in current_text:
+                # Делим на выражение и результат
+                parts = current_text.split('=', 1)
+                expr_part = parts[0].strip()
+                if expr_part == self.last_expression:
+                    # Это именно тот случай: выражение совпадает, результат совпадает
+                    # → убираем "=..." и оставляем только результат
+                    self.processing_operator = True
                     self.input_field.setText(self.last_result)
-                    self.is_result_displayed = False
-                    self.input_field.setCursorPosition(len(self.last_result))
+                    self.is_result_displayed = False  # Теперь мы на "чистом" результате
                     self.last_text = self.last_result
+                    self.input_field.setCursorPosition(len(self.last_result))
+                    self.processing_operator = False
                     return
 
+        # --- Сценарий: новое выражение или поле с уже вычисленным результатом (но без =) ---
+        if '=' in current_text:
+            # Обработка, если в поле уже есть выражение=результат (но не отображается как результат)
             parts = current_text.split('=', 1)
             if len(parts) == 2:
                 expr_to_eval = parts[0].strip()
@@ -930,8 +945,14 @@ class MiniCalcWindow(QWidget):
                     self._add_to_history(full_text)
                     self.input_field.setCursorPosition(len(full_text))
                     return
+                else:
+                    # Ошибка в выражении
+                    self.input_field.setText(error or "Ошибка")
+                    self.is_result_displayed = False
+                    self.last_text = error or "Ошибка"
+                    return
 
-        # Обычное вычисление
+        # --- Обычное вычисление ---
         result, error = self._safe_eval(current_text)
 
         if result and not error:
