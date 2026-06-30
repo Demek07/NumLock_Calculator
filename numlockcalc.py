@@ -673,30 +673,44 @@ class MiniCalcWindow(QWidget):
         if self.processing_operator:
             return
 
-        # Если результат отображается и текст изменился — обрезаем результат при удалении
-        if self.is_result_displayed and text != self.last_text:
-            # Если в тексте нет '=', или '=' не на конце → убираем результат
-            if '=' not in text or text.find('=') < len(text) - 1:
-                # Удаляем всё после последнего '=' или всё после expression
-                if '=' in text:
-                    eq_pos = text.rfind('=')
-                    current_expr = text[:eq_pos]
-                else:
-                    current_expr = self.last_expression or ""
-
-                # Если expression не пусто — ставим его в поле
-                if current_expr:
-                    self.processing_operator = True
-                    self.input_field.setText(current_expr)
-                    self.is_result_displayed = False
-                    self.last_text = current_expr
-                    self.input_field.setFocus()
-                    self.input_field.setCursorPosition(len(current_expr))
-                    self.processing_operator = False
-                    return
-
+        # Если результат НЕ отображается — просто обновляем
+        if not self.is_result_displayed:
             self.last_text = text
             return
+
+        # Если текст не изменился — выходим
+        if text == self.last_text:
+            return
+
+        cursor_pos = self.input_field.cursorPosition()
+
+        # 🔥 Главная логика: любое редактирование → удаляем результат (всё после `=` или `=`)
+        self.processing_operator = True
+
+        # Если `=` есть и не в конце — обрезаем до последнего `=`
+        if '=' in text:
+            eq_pos = text.rfind('=')
+            text_without_result = text[:eq_pos]
+            # Обновляем last_expression на редактированное выражение
+            self.last_expression = text_without_result
+            new_text = text_without_result
+        else:
+            # `=` нет — просто используем last_expression (исходное выражение)
+            new_text = self.last_expression or text
+
+        # Всегда ставим выражение (без результата)
+        self.input_field.setText(new_text)
+        self.is_result_displayed = False
+
+        # Восстанавливаем курсор
+        new_len = len(new_text)
+        if cursor_pos > new_len:
+            # Если курсор был после конца — ставим на конец
+            cursor_pos = new_len
+        self.input_field.setCursorPosition(cursor_pos)
+
+        self.last_text = new_text
+        self.processing_operator = False
 
         # Для обычного ввода (не отображается результат)
         self.last_text = text
