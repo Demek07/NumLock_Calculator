@@ -573,6 +573,7 @@ class MiniCalcWindow(QWidget):
         self.is_result_displayed = False
         self.last_text = ""
         self.processing_operator = False
+        self._cleared_once = False
 
         # История и навигация
         self.history = []
@@ -928,7 +929,9 @@ class MiniCalcWindow(QWidget):
     def calculate(self):
         """Вычисляет выражение и показывает результат."""
         current_text = self.input_field.text().strip()
-
+        # ✅ Если поле пустое — ничего не делаем
+        if not current_text:
+            return
         # --- Сценарий: уже отображается результат (например, "10" или "5+5=10") ---
         if self.is_result_displayed:
             # Если поле содержит только результат (число), и Enter нажат → просто оставляем результат
@@ -1001,21 +1004,30 @@ class MiniCalcWindow(QWidget):
 
     def clear_input(self):
         """Очищает поле ввода (по Escape)."""
-        self.input_field.clear()
+        # self.input_field.clear()
         self.last_result = None
         self.last_expression = None
         self.is_result_displayed = False
         self.last_text = ""
+        self.processing_operator = False
         self.history_index = -1
         self.current_input = ""
         self.input_field.setFocus()
+        self.input_field.selectAll()
+        self.input_field.clear()
+        self._cleared_once = False
 
     def keyPressEvent(self, event):
         """Обработка клавиш."""
         key = event.key()
 
         if key == Qt.Key_Escape:
-            self.hide_to_tray()
+            # 🔁 Первый Escape — очистка, второй — сворачивание
+            if not self._cleared_once:
+                self.clear_input()
+                self._cleared_once = True  # ← флаг, что очистили
+            else:
+                self.hide_to_tray()  # ← второй раз — сворачиваем
             return
 
         # Стрелки для навигации по истории
@@ -1099,6 +1111,11 @@ class MiniCalcWindow(QWidget):
         self.hide()
         event.ignore()
 
+    def hideEvent(self, event):
+        self._pending_toggle = False
+        self._cleared_once = False  # ← ← ← сбросить флаг при скрытии
+        super().hideEvent(event)
+
     def showEvent(self, event):
         """При показе окна фокус на поле ввода."""
         self.input_field.setFocus()
@@ -1106,6 +1123,7 @@ class MiniCalcWindow(QWidget):
             self.input_field.selectAll()
         self.history_index = -1
         self.current_input = ""
+        self._cleared_once = False
         super().showEvent(event)
 
 
