@@ -59,7 +59,7 @@ from numlockcalc_icon import ICON_B64
 # ---------------------------------------------------------------------------
 # Конфигурация
 # ---------------------------------------------------------------------------
-APP_NAME = "CalcNumLock"
+APP_NAME = "NumLockCalc"
 APP_VERSION = "4.2"
 
 DATA_DIR_NAME = "_calcnumlock_data"
@@ -244,14 +244,17 @@ def get_startup_folder() -> Path:
         return Path(buf.value) / "Programs" / "Startup"
 
 
+# def get_shortcut_path() -> Path:
+#     startup = get_startup_folder()
+#     if getattr(sys, 'frozen', False):
+#         exe_name = Path(sys.executable).name
+#         shortcut_name = exe_name.replace('.exe', '.lnk')
+#     else:
+#         shortcut_name = f"{APP_NAME}.lnk"
+#     return startup / shortcut_name
 def get_shortcut_path() -> Path:
     startup = get_startup_folder()
-    if getattr(sys, 'frozen', False):
-        exe_name = Path(sys.executable).name
-        shortcut_name = exe_name.replace('.exe', '.lnk')
-    else:
-        shortcut_name = f"{APP_NAME}.lnk"
-    return startup / shortcut_name
+    return startup / "NumLockCalc.lnk"
 
 
 def is_autostart_enabled() -> bool:
@@ -263,81 +266,40 @@ def is_autostart_enabled() -> bool:
 
 def add_to_autostart() -> bool:
     try:
+        import win32com.client
+    except ImportError:
+        print("[ERROR] pywin32 not installed. Please run: pip install pywin32")
+        return False
+
+    try:
         startup_folder = get_startup_folder()
         shortcut_path = get_shortcut_path()
-
-        # Проверяем, существует ли папка
         startup_folder.mkdir(parents=True, exist_ok=True)
 
-        # Определяем целевой файл и параметры
         if getattr(sys, 'frozen', False):
             # Запущено как exe
             target = sys.executable
             working_dir = str(APP_ROOT)
-            script = f'''
-            $shell = New-Object -ComObject WScript.Shell;
-            $shortcut = $shell.CreateShortCut("{shortcut_path}");
-            $shortcut.TargetPath = "{target}";
-            $shortcut.WorkingDirectory = "{working_dir}";
-            $shortcut.Description = "{APP_NAME}";
-            $shortcut.Save();
-            '''
         else:
             python_dir = Path(sys.executable).parent
             pythonw = python_dir / "pythonw.exe"
             target = str(pythonw if pythonw.exists() else sys.executable)
             script_path = Path(sys.argv[0]).resolve()
             working_dir = str(APP_ROOT)
-            script = f'''
-            $shell = New-Object -ComObject WScript.Shell;
-            $shortcut = $shell.CreateShortCut("{shortcut_path}");
-            $shortcut.TargetPath = "{target}";
-            $shortcut.Arguments = "{script_path}";
-            $shortcut.WorkingDirectory = "{working_dir}";
-            $shortcut.Description = "{APP_NAME}";
-            $shortcut.Save();
-            '''
 
-        # Оборачиваем в try/catch и используем -WindowStyle Hidden
-        full_script = f"""
-        try {{
-            {script}
-        }} catch {{
-            Write-Error $_.Exception.Message;
-            exit 1;
-        }}
-        exit 0;
-        """
-
-        # Запускаем PowerShell без окна
-        result = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-ExecutionPolicy", "Bypass",
-                "-WindowStyle", "Hidden",
-                "-Command", full_script
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False
-        )
-
-        if result.returncode != 0:
-            print(f"[ERROR] PowerShell exit code: {result.returncode}")
-            if result.stderr:
-                print(f"[ERROR] PowerShell stderr: {result.stderr}")
-            return False
+        # Создаём ярлык через Shell.Application
+        shell = win32com.client.Dispatch("WScript.Shell")
+        shortcut = shell.CreateShortCut(str(shortcut_path))
+        shortcut.TargetPath = target
+        shortcut.WorkingDirectory = working_dir
+        shortcut.Description = APP_NAME
+        shortcut.save()
 
         return True
 
-    except subprocess.TimeoutExpired:
-        print("[ERROR] PowerShell timed out")
-        return False
     except Exception as e:
-        import traceback
         print(f"[ERROR] add_to_autostart: {e}")
+        import traceback
         traceback.print_exc()
         return False
 
@@ -1372,22 +1334,22 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"О программе — {APP_NAME}")
-        self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.Window | Qt.WindowStaysOnTopHint | Qt.WindowCloseButtonHint)
         self.setFixedWidth(340)
         self.setFixedHeight(180)
         self.setStyleSheet("""
-            QDialog     { background:#1e1e1e; color:#eee; }
-            QLabel      { color:#eee; }
-            QPushButton { background:#2a2a2a; color:#eee;
-                          border:1px solid #555; padding:5px 18px; }
-            QPushButton:hover { background:#383838; }
+            QDialog     { background:#eee; color:#000000; }
+            QLabel      { color:#aaa; }
+            QPushButton { background:#eee; color:#000000;
+                          border:1px solid #0078d7; padding:5px 18px; }
+            QPushButton:hover { background:#0078d7; }
         """)
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
         lay.setContentsMargins(22, 22, 22, 22)
 
         lbl = QLabel(f"<b>{APP_NAME}</b>&nbsp;&nbsp;v{APP_VERSION}")
-        lbl.setStyleSheet("font-size:18px; color:#fff;")
+        lbl.setStyleSheet("font-size:18px; color:#000000;")
         lay.addWidget(lbl, alignment=Qt.AlignCenter)
 
         desc = QLabel(
@@ -1398,7 +1360,7 @@ class AboutDialog(QDialog):
         desc.setAlignment(Qt.AlignCenter)
         desc.setWordWrap(True)
         desc.setOpenExternalLinks(True)
-        desc.setStyleSheet("color:#ccc; font-size:13px;")
+        desc.setStyleSheet("color:#000000; font-size:13px;")
         lay.addWidget(desc)
 
         btn = QPushButton("Закрыть")
