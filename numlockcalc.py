@@ -684,35 +684,48 @@ class MiniCalcWindow(QWidget):
 
         cursor_pos = self.input_field.cursorPosition()
 
-        # 🔥 Главная логика: любое редактирование → удаляем результат (всё после `=` или `=`)
-        self.processing_operator = True
+        # 🔍 Логика: если добавлен оператор после результата — добавляем его к результату
+        # Пример: "5+5=10" → "10+", "10-", "10*", "10/", "10%", "10^"
+        if len(text) > len(self.last_text):
+            # Новое добавление > 0 символов
+            added = text[len(self.last_text):]
+            if added in '+-*/%^' and self.last_result is not None:
+                # Пользователь добавил оператор после результата
+                self.processing_operator = True
+                new_text = f"{self.last_result}{added}"
+                self.input_field.setText(new_text)
+                self.is_result_displayed = False
+                self.last_text = new_text
+                self.input_field.setCursorPosition(len(new_text))
+                self.processing_operator = False
+                return
 
-        # Если `=` есть и не в конце — обрезаем до последнего `=`
+        # Если `=` есть в тексте и он **не в конце** — удаляем результат
+        # Пример: "5+5=10" → "5+5=1" → "5+5"
         if '=' in text:
             eq_pos = text.rfind('=')
-            text_without_result = text[:eq_pos]
-            # Обновляем last_expression на редактированное выражение
-            self.last_expression = text_without_result
-            new_text = text_without_result
-        else:
-            # `=` нет — просто используем last_expression (исходное выражение)
-            new_text = self.last_expression or text
+            if eq_pos < len(text) - 1:
+                text_without_result = text[:eq_pos]
+                self.processing_operator = True
+                self.input_field.setText(text_without_result)
+                self.is_result_displayed = False
+                self.last_text = text_without_result
+                self.input_field.setCursorPosition(cursor_pos)
+                self.processing_operator = False
+                return
 
-        # Всегда ставим выражение (без результата)
-        self.input_field.setText(new_text)
-        self.is_result_displayed = False
+        # Если `=` нет — удаляем результат (например, стёрли всё после `=`)
+        if '=' not in text:
+            self.processing_operator = True
+            self.input_field.setText(self.last_expression)
+            self.is_result_displayed = False
+            self.last_text = self.last_expression
+            if cursor_pos > len(self.last_expression):
+                cursor_pos = len(self.last_expression)
+            self.input_field.setCursorPosition(cursor_pos)
+            self.processing_operator = False
+            return
 
-        # Восстанавливаем курсор
-        new_len = len(new_text)
-        if cursor_pos > new_len:
-            # Если курсор был после конца — ставим на конец
-            cursor_pos = new_len
-        self.input_field.setCursorPosition(cursor_pos)
-
-        self.last_text = new_text
-        self.processing_operator = False
-
-        # Для обычного ввода (не отображается результат)
         self.last_text = text
 
     def _normalize_expression(self, expression: str) -> str:
