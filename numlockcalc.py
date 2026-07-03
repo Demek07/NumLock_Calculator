@@ -241,14 +241,6 @@ def get_startup_folder() -> Path:
         return Path(buf.value) / "Programs" / "Startup"
 
 
-# def get_shortcut_path() -> Path:
-#     startup = get_startup_folder()
-#     if getattr(sys, 'frozen', False):
-#         exe_name = Path(sys.executable).name
-#         shortcut_name = exe_name.replace('.exe', '.lnk')
-#     else:
-#         shortcut_name = f"{APP_NAME}.lnk"
-#     return startup / shortcut_name
 def get_shortcut_path() -> Path:
     startup = get_startup_folder()
     return startup / "NumLockCalc.lnk"
@@ -416,6 +408,49 @@ class HistoryDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# Кастомный QLineEdit с обработкой очистки при вводе
+# ---------------------------------------------------------------------------
+class CalcLineEdit(QLineEdit):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self._pending_clear = False
+        
+    def keyPressEvent(self, event):
+        """Обработка нажатий клавиш."""
+        key = event.key()
+        
+        # Если установлен флаг очистки при вводе
+        if self._pending_clear and self.parent_window:
+            # Список клавиш, которые НЕ должны очищать поле
+            special_keys = (
+                Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta,
+                Qt.Key_CapsLock, Qt.Key_NumLock, Qt.Key_ScrollLock,
+                Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
+                Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown,
+                Qt.Key_Insert, Qt.Key_Delete,
+                Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter,
+                Qt.Key_Tab, Qt.Key_Backspace
+            )
+            
+            # Если нажата не специальная клавиша и не модификатор
+            if key not in special_keys and not (key >= Qt.Key_F1 and key <= Qt.Key_F35):
+                # Очищаем поле и сбрасываем флаг
+                self.parent_window.clear_input()
+                self._pending_clear = False
+                # Вызываем родительскую обработку для ввода символа
+                super().keyPressEvent(event)
+                return
+        
+        # Для специальных клавиш просто передаем дальше
+        super().keyPressEvent(event)
+    
+    def set_pending_clear(self, value):
+        """Устанавливает флаг очистки при вводе."""
+        self._pending_clear = value
+
+
+# ---------------------------------------------------------------------------
 # Окно миникалькулятора без шапки
 # ---------------------------------------------------------------------------
 class MiniCalcWindow(QWidget):
@@ -463,8 +498,8 @@ class MiniCalcWindow(QWidget):
         self.drag_label.mouseMoveEvent = self.mouseMoveEvent
         main_layout.addWidget(self.drag_label)
 
-        # Строка ввода
-        self.input_field = QLineEdit()
+        # Строка ввода - используем кастомный класс
+        self.input_field = CalcLineEdit(self)
         self.input_field.setPlaceholderText("Введите выражение (например, 2,2+3,8)")
         self.input_field.setStyleSheet("""
             QLineEdit {
@@ -677,12 +712,13 @@ class MiniCalcWindow(QWidget):
         # Если `=` нет — удаляем результат (например, стёрли всё после `=`)
         if '=' not in text:
             self.processing_operator = True
-            self.input_field.setText(self.last_expression)
-            self.is_result_displayed = False
-            self.last_text = self.last_expression
-            if cursor_pos > len(self.last_expression):
-                cursor_pos = len(self.last_expression)
-            self.input_field.setCursorPosition(cursor_pos)
+            if self.last_expression:
+                self.input_field.setText(self.last_expression)
+                self.is_result_displayed = False
+                self.last_text = self.last_expression
+                if cursor_pos > len(self.last_expression):
+                    cursor_pos = len(self.last_expression)
+                self.input_field.setCursorPosition(cursor_pos)
             self.processing_operator = False
             return
 
@@ -891,8 +927,7 @@ class MiniCalcWindow(QWidget):
             self.last_text = error or "Ошибка"
 
     def clear_input(self):
-        """Очищает поле ввода (по Escape)."""
-        # self.input_field.clear()
+        """Очищает поле ввода."""
         self.last_result = None
         self.last_expression = None
         self.is_result_displayed = False
@@ -906,7 +941,7 @@ class MiniCalcWindow(QWidget):
         self._cleared_once = False
 
     def keyPressEvent(self, event):
-        """Обработка клавиш."""
+        """Обработка клавиш для всего окна."""
         key = event.key()
 
         if key == Qt.Key_Escape:
@@ -1001,11 +1036,19 @@ class MiniCalcWindow(QWidget):
 
     def hideEvent(self, event):
         self._pending_toggle = False
-        self._cleared_once = False  # ← ← ← сбросить флаг при скрытии
+        self._cleared_once = False
         super().hideEvent(event)
 
     def showEvent(self, event):
         """При показе окна фокус на поле ввода."""
+        # Если отображается результат, устанавливаем флаг для очистки при вводе
+        if self.is_result_displayed and self.input_field.text():
+            self.input_field.set_pending_clear(True)
+            # Выделяем весь текст
+            self.input_field.selectAll()
+        else:
+            self.input_field.set_pending_clear(False)
+        
         self.input_field.setFocus()
         if not self.is_result_displayed:
             self.input_field.selectAll()
