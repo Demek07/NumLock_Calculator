@@ -1264,28 +1264,46 @@ class CalcTrayApp(QWidget):
             window.raise_()
             window.activateWindow()
             window.input_field.setFocus()
-            if not window.is_result_displayed:
+            
+            # Если есть результат - выделяем и устанавливаем флаг очистки
+            if window.is_result_displayed and window.input_field.text():
+                window.input_field.set_pending_clear(True)
                 window.input_field.selectAll()
+            elif not window.is_result_displayed:
+                window.input_field.selectAll()            
 
     def _do_toggle(self):
         window = self.calc_window
 
         if not window.isVisible():
+            # Если окно скрыто → ПОКАЗЫВАЕМ
             window.show()
             window.raise_()
             window.activateWindow()
             window.input_field.setFocus()
             window.input_field.selectAll()
+            
+            # Если есть результат - устанавливаем флаг очистки
+            if window.is_result_displayed and window.input_field.text():
+                window.input_field.set_pending_clear(True)
+                window.input_field.selectAll()            
         else:
             if window.isActiveWindow():
+                # Если окно видимо И активно → СКРЫВАЕМ в трей
                 window._save_settings()
                 window.hide()
             else:
+                # Если окно видимо, но НЕ активно → поднимаем наверх
                 window.raise_()
                 window.activateWindow()
                 window.input_field.setFocus()
-                if not window.is_result_displayed:
+                
+                # Если есть результат - выделяем и устанавливаем флаг очистки
+                if window.is_result_displayed and window.input_field.text():
+                    window.input_field.set_pending_clear(True)
                     window.input_field.selectAll()
+                elif not window.is_result_displayed:
+                    window.input_field.selectAll()                
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.Trigger:
