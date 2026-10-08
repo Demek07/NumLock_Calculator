@@ -3,7 +3,7 @@
 """
 CalcNumLock — миникалькулятор по NumLock
 =======================================================================
-Версия: 4.2
+Версия: 4.6
 
 Функционал:
   • NumLock — показать / скрыть миникалькулятор
@@ -14,8 +14,10 @@ CalcNumLock — миникалькулятор по NumLock
   • Округление до 4 знаков после запятой
   • Результат вычисляется при нажатии Enter
   • Формат вывода: выражение=результат
-  • Повторный Enter оставляет только результат
-  • При вводе оператора после результата - результат + оператор
+  • После вычисления текст выделяется — ввод цифры заменяет всё
+  • Enter фиксирует результат (снимает выделение, отключает замену)
+  • После фиксации цифры дописываются к результату, оператор — тоже
+  • При вводе оператора после «свежего» результата — результат + оператор
   • История вычислений (сохраняется в файл)
   • Навигация по истории: стрелки вверх/вниз
   • Кнопка истории рядом с полем ввода
@@ -58,7 +60,7 @@ from numlockcalc_icon import ICON_B64
 # Конфигурация
 # ---------------------------------------------------------------------------
 APP_NAME = "NumLockCalc"
-APP_VERSION = "4.2"
+APP_VERSION = "4.6"
 
 DATA_DIR_NAME = "_calcnumlock_data"
 
@@ -83,10 +85,15 @@ HISTORY_FILE = DATA_DIR / "history.json"
 VK_NUMLOCK = 0x90
 KEYEVENTF_KEYUP = 0x0002
 
+# WinAPI для форсирования фокуса
+SW_RESTORE = 9
+
 # Получаем доступ к WinAPI
 user32 = ctypes.windll.user32
 GetKeyState = user32.GetKeyState
 keybd_event = user32.keybd_event
+SetForegroundWindow = user32.SetForegroundWindow
+ShowWindow = user32.ShowWindow
 
 
 def load_embedded_icon() -> QtGui.QIcon:
@@ -98,71 +105,89 @@ def load_embedded_icon() -> QtGui.QIcon:
             return QtGui.QIcon(pix)
     except Exception:
         pass
-    # Фоллбэк — синий квадрат
     pix = QtGui.QPixmap(32, 32)
     pix.fill(QtGui.QColor("#0078d7"))
     return QtGui.QIcon(pix)
 
 
 def is_numlock_on() -> bool:
-    """Проверяет, включен ли NumLock."""
     try:
         return bool(GetKeyState(VK_NUMLOCK) & 1)
     except Exception:
         return False
 
 
-# Глобальный флаг для отслеживания программного нажатия NumLock
 _programmatic_numlock = False
 
 
 def set_numlock_on():
-    """Принудительно включает NumLock без генерации дополнительных событий."""
+    """Принудительно включает NumLock, если выключен."""
     global _programmatic_numlock
     try:
         if not is_numlock_on():
             _programmatic_numlock = True
-            # Имитируем нажатие NumLock
             keybd_event(VK_NUMLOCK, 0, 0, 0)
             keybd_event(VK_NUMLOCK, 0, KEYEVENTF_KEYUP, 0)
-            # Сбрасываем флаг через минимальную задержку
             QTimer.singleShot(50, lambda: set_programmatic_flag(False))
     except Exception:
         pass
 
 
 def set_programmatic_flag(value: bool):
-    """Устанавливает флаг программного нажатия."""
     global _programmatic_numlock
     _programmatic_numlock = value
 
 
 def is_programmatic_numlock() -> bool:
-    """Проверяет, является ли текущее нажатие программным."""
     global _programmatic_numlock
     return _programmatic_numlock
 
 
+def force_foreground(hwnd: int):
+    """Принудительно выводит окно на передний план через AttachThreadInput."""
+    try:
+        if not hwnd:
+            return
+        fg = user32.GetForegroundWindow()
+        cur_thread = ctypes.windll.kernel32.GetCurrentThreadId()
+        fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        tgt_thread = user32.GetWindowThreadProcessId(hwnd, None)
+
+        attached = []
+        if fg_thread and fg_thread != cur_thread:
+            if user32.AttachThreadInput(fg_thread, cur_thread, True):
+                attached.append(fg_thread)
+        if tgt_thread and tgt_thread != cur_thread:
+            if user32.AttachThreadInput(tgt_thread, cur_thread, True):
+                attached.append(tgt_thread)
+
+        ShowWindow(hwnd, SW_RESTORE)
+        SetForegroundWindow(hwnd)
+
+        for th in attached:
+            try:
+                user32.AttachThreadInput(th, cur_thread, False)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def format_number(num_str: str) -> str:
-    """
-    Форматирует число с разделением разрядов пробелами.
-    Поддерживает целые числа и числа с плавающей точкой.
-    """
+    """Форматирует число с разделением разрядов пробелами."""
     if not num_str:
         return num_str
+    if 'e' in num_str.lower():
+        return num_str
 
-    # Проверяем, является ли строка числом
     try:
-        # Пробуем преобразовать в число
         if ',' in num_str:
-            # Если есть запятая, пробуем как число с плавающей точкой
             float(num_str.replace(',', '.'))
         else:
             float(num_str)
     except ValueError:
         return num_str
 
-    # Разделяем целую и дробную части
     if ',' in num_str:
         parts = num_str.split(',')
         int_part = parts[0]
@@ -175,20 +200,16 @@ def format_number(num_str: str) -> str:
         int_part = num_str
         frac_part = ''
 
-    # Форматируем целую часть с разделением тысяч
     if int_part.startswith('-'):
         sign = '-'
         int_part = int_part[1:]
     else:
         sign = ''
 
-    # Если целая часть пустая или состоит только из нулей
     if not int_part or int_part == '0':
         formatted_int = '0'
     else:
-        # Удаляем ведущие нули
         int_part = int_part.lstrip('0') or '0'
-        # Разделяем на группы по 3 цифры справа налево
         groups = []
         for i in range(len(int_part), 0, -3):
             start = max(0, i - 3)
@@ -199,51 +220,39 @@ def format_number(num_str: str) -> str:
 
 
 def round_number(num_str: str, decimals: int = 4) -> str:
-    """
-    Округляет число до указанного количества знаков после запятой.
-    """
+    """Округляет число до указанного количества знаков после запятой."""
     if not num_str:
         return num_str
-
-    # Проверяем, является ли строка числом
     try:
-        # Заменяем запятую на точку для преобразования
         num = float(num_str.replace(',', '.'))
     except ValueError:
         return num_str
 
-    # Округляем
     rounded = round(num, decimals)
 
-    # Форматируем результат
     if rounded.is_integer():
         result = str(int(rounded))
     else:
-        # Преобразуем в строку с нужным количеством знаков
         result = f"{rounded:.{decimals}f}".rstrip('0').rstrip('.')
-        # Заменяем точку на запятую
         result = result.replace('.', ',')
 
     return result
 
 
 # -----------------------------------------------------------------------
-# Функции для автозагрузки (без winshell — работает в .py и .exe)
+# Автозагрузка
 # -----------------------------------------------------------------------
 def get_startup_folder() -> Path:
-    """Возвращает путь к папке автозагрузки текущего пользователя."""
     try:
         return Path.home() / "AppData" / "Roaming" / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
     except Exception:
-        import ctypes
         buf = ctypes.create_unicode_buffer(260)
         ctypes.windll.shell32.SHGetFolderPathW(None, 0x19, None, 0, buf)
         return Path(buf.value) / "Programs" / "Startup"
 
 
 def get_shortcut_path() -> Path:
-    startup = get_startup_folder()
-    return startup / "NumLockCalc.lnk"
+    return get_startup_folder() / "NumLockCalc.lnk"
 
 
 def is_autostart_enabled() -> bool:
@@ -266,26 +275,21 @@ def add_to_autostart() -> bool:
         startup_folder.mkdir(parents=True, exist_ok=True)
 
         if getattr(sys, 'frozen', False):
-            # Запущено как exe
             target = sys.executable
             working_dir = str(APP_ROOT)
         else:
             python_dir = Path(sys.executable).parent
             pythonw = python_dir / "pythonw.exe"
             target = str(pythonw if pythonw.exists() else sys.executable)
-            script_path = Path(sys.argv[0]).resolve()
             working_dir = str(APP_ROOT)
 
-        # Создаём ярлык через Shell.Application
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(str(shortcut_path))
         shortcut.TargetPath = target
         shortcut.WorkingDirectory = working_dir
         shortcut.Description = APP_NAME
         shortcut.save()
-
         return True
-
     except Exception as e:
         print(f"[ERROR] add_to_autostart: {e}")
         import traceback
@@ -316,41 +320,22 @@ class HistoryDialog(QDialog):
         self.setMinimumSize(400, 300)
 
         self.setStyleSheet("""
-            QDialog {
-                background: #eee;
-                color: #000000;
-            }
+            QDialog { background: #eee; color: #000000; }
             QListWidget {
-                background: #eee;
-                color: #000000;
-                border: 2px solid #0078d7;
-                border-radius: 4px;
-                font-family: Arial, sans-serif;
-                font-weight: bold;
-                font-size: 13px;
-                padding: 5px;
+                background: #eee; color: #000000;
+                border: 2px solid #0078d7; border-radius: 4px;
+                font-family: Arial, sans-serif; font-weight: bold;
+                font-size: 13px; padding: 5px;
             }
-            QListWidget::item {
-                padding: 4px 8px;
-                border-bottom: 1px solid #0078d7;
-            }
-            QListWidget::item:selected {
-                background: #0078d7;
-                color: white;
-            }
+            QListWidget::item { padding: 4px 8px; border-bottom: 1px solid #0078d7; }
+            QListWidget::item:selected { background: #0078d7; color: white; }
             QPushButton {
-                background: #eee;
-                color: #000000;
-                border: 1px solid #0078d7;
-                border-radius: 4px;
+                background: #eee; color: #000000;
+                border: 1px solid #0078d7; border-radius: 4px;
                 padding: 6px 16px;
             }
-            QPushButton:hover {
-                background: #0078d7;
-            }
-            QLabel {
-                color: #aaa;
-            }
+            QPushButton:hover { background: #0078d7; }
+            QLabel { color: #aaa; }
         """)
 
         self.history_list = history_list
@@ -360,33 +345,24 @@ class HistoryDialog(QDialog):
         layout.setContentsMargins(16, 0, 16, 16)
         layout.setSpacing(8)
 
-        # Заголовок
         title = QLabel(f"История ({len(history_list)} записей)")
         title.setStyleSheet("font-size: 14px; color: #eee;")
         layout.addWidget(title)
 
-        # Список истории
         self.list_widget = QListWidget()
         self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
-
         for item in reversed(history_list):
             self.list_widget.addItem(item)
-
         layout.addWidget(self.list_widget)
 
-        # Кнопки
         btn_layout = QHBoxLayout()
-
         btn_clear = QPushButton("Очистить историю")
         btn_clear.clicked.connect(self.clear_history)
         btn_layout.addWidget(btn_clear)
-
         btn_layout.addStretch()
-
         btn_close = QPushButton("Закрыть")
         btn_close.clicked.connect(self.close)
         btn_layout.addWidget(btn_close)
-
         layout.addLayout(btn_layout)
 
     def on_item_double_clicked(self, item):
@@ -408,155 +384,148 @@ class HistoryDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
-# Кастомный QLineEdit с обработкой очистки при вводе
+# Кастомный QLineEdit
 # ---------------------------------------------------------------------------
 class CalcLineEdit(QLineEdit):
+    """
+    keyPressEvent:
+      • _pending_clear == True (результат свежий, выделен):
+          - цифра / Backspace / Delete / прочие печатные → clear_input + ввод
+          - оператор (+, -, *, /, %, ^) → восстановить полный текст,
+            пропустить символ — on_text_changed обработает как результат+оператор
+      • _pending_clear == False — обычная обработка
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
         self._pending_clear = False
-        
+
     def keyPressEvent(self, event):
-        """Обработка нажатий клавиш."""
         key = event.key()
-        
-        # Если установлен флаг очистки при вводе
+
         if self._pending_clear and self.parent_window:
-            # Список клавиш, которые НЕ должны очищать поле
-            special_keys = (
+            modifiers = (
                 Qt.Key_Shift, Qt.Key_Control, Qt.Key_Alt, Qt.Key_Meta,
                 Qt.Key_CapsLock, Qt.Key_NumLock, Qt.Key_ScrollLock,
                 Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right,
                 Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown,
-                Qt.Key_Insert, Qt.Key_Delete,
+                Qt.Key_Insert,
                 Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter,
-                Qt.Key_Tab, Qt.Key_Backspace
+                Qt.Key_Tab,
             )
-            
-            # Если нажата не специальная клавиша и не модификатор
-            if key not in special_keys and not (key >= Qt.Key_F1 and key <= Qt.Key_F35):
-                # Очищаем поле и сбрасываем флаг
-                self.parent_window.clear_input()
+            is_function = Qt.Key_F1 <= key <= Qt.Key_F35
+
+            operator_chars = {
+                Qt.Key_Plus, Qt.Key_Minus, Qt.Key_Asterisk,
+                Qt.Key_Slash, Qt.Key_Percent, Qt.Key_AsciiCircum,
+            }
+
+            # Оператор на свежем результате — восстановить текст, пропустить символ
+            if key in operator_chars and self.parent_window.is_result_displayed:
+                self.parent_window.restore_result_text()
                 self._pending_clear = False
-                # Вызываем родительскую обработку для ввода символа
                 super().keyPressEvent(event)
                 return
-        
-        # Для специальных клавиш просто передаем дальше
+
+            # Всё остальное печатное и Backspace/Delete — очищают поле
+            if key in (Qt.Key_Backspace, Qt.Key_Delete) or (
+                key not in modifiers and not is_function
+            ):
+                self.parent_window.clear_input()
+                self._pending_clear = False
+                if key in (Qt.Key_Backspace, Qt.Key_Delete):
+                    event.accept()
+                    return
+                super().keyPressEvent(event)
+                return
+
         super().keyPressEvent(event)
-    
+
     def set_pending_clear(self, value):
-        """Устанавливает флаг очистки при вводе."""
         self._pending_clear = value
 
 
 # ---------------------------------------------------------------------------
-# Окно миникалькулятора без шапки
+# Окно миникалькулятора
 # ---------------------------------------------------------------------------
 class MiniCalcWindow(QWidget):
-    """Окно с однострочным калькулятором без шапки."""
-
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Калькулятор")
         self.setWindowFlags(
             Qt.WindowStaysOnTopHint |
             Qt.FramelessWindowHint |
-            Qt.Tool
+            Qt.Window
         )
         self.setFixedWidth(400)
         self.setFixedHeight(38)
 
-        # Загружаем иконку
         try:
             self.setWindowIcon(load_embedded_icon())
         except Exception:
             pass
 
-        # Основной layout - одна строка
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(3)
 
-        # ☰ - область для перетаскивания
+        # ☰ — перетаскивание
         self.drag_label = QLabel("☰")
         self.drag_label.setFixedWidth(26)
         self.drag_label.setStyleSheet("""
             QLabel {
-                color: #888;
-                font-size: 15px;
-                padding: 4px 4px;
-                background: transparent;
-                font-weight: bold;
+                color: #888; font-size: 15px; padding: 4px 4px;
+                background: transparent; font-weight: bold;
             }
-            QLabel:hover {
-                color: #0078d7;
-            }
+            QLabel:hover { color: #0078d7; }
         """)
         self.drag_label.setAlignment(Qt.AlignCenter)
         self.drag_label.mousePressEvent = self.mousePressEvent
         self.drag_label.mouseMoveEvent = self.mouseMoveEvent
         main_layout.addWidget(self.drag_label)
 
-        # Строка ввода - используем кастомный класс
+        # Поле ввода
         self.input_field = CalcLineEdit(self)
         self.input_field.setPlaceholderText("Введите выражение (например, 2,2+3,8)")
         self.input_field.setStyleSheet("""
             QLineEdit {
-                background: #eee;
-                color: #000000;
-                border: 2px solid #0078d7;
-                border-radius: 4px;
+                background: #eee; color: #000000;
+                border: 2px solid #0078d7; border-radius: 4px;
                 padding: 3px 10px;
-                font-size: 13px;
-                font-family: Arial, sans-serif;
+                font-size: 13px; font-family: Arial, sans-serif;
                 font-weight: bold;
                 selection-background-color: #0078d7;
             }
-            QLineEdit:focus {
-                border: 3px solid #0078d7;
-            }
+            QLineEdit:focus { border: 3px solid #0078d7; }
         """)
         self.input_field.returnPressed.connect(self.calculate)
         self.input_field.textChanged.connect(self.on_text_changed)
         main_layout.addWidget(self.input_field, 1)
 
-        # Кнопка истории
+        # История
         self.btn_history = QPushButton("📋")
         self.btn_history.setFixedSize(26, 26)
         self.btn_history.setStyleSheet("""
             QPushButton {
-                background: transparent;
-                color: #888;
-                border: none;
-                font-size: 13px;
-                padding: 0px;
-                border-radius: 4px;
+                background: transparent; color: #888;
+                border: none; font-size: 13px;
+                padding: 0px; border-radius: 4px;
             }
-            QPushButton:hover {
-                color: #eee;
-                background: #0078d7;
-            }
+            QPushButton:hover { color: #eee; background: #0078d7; }
         """)
         self.btn_history.clicked.connect(self.show_history)
         main_layout.addWidget(self.btn_history)
 
-        # Кнопка закрыть (спрятать в трей)
+        # Закрыть
         self.btn_close = QPushButton("✕")
         self.btn_close.setFixedSize(26, 26)
         self.btn_close.setStyleSheet("""
             QPushButton {
-                background: transparent;
-                color: #888;
-                border: none;
-                font-size: 13px;
-                padding: 0px;
-                border-radius: 4px;
+                background: transparent; color: #888;
+                border: none; font-size: 13px;
+                padding: 0px; border-radius: 4px;
             }
-            QPushButton:hover {
-                color: #fff;
-                background: #c42b2b;
-            }
+            QPushButton:hover { color: #fff; background: #c42b2b; }
         """)
         self.btn_close.clicked.connect(self.hide_to_tray)
         main_layout.addWidget(self.btn_close)
@@ -567,23 +536,33 @@ class MiniCalcWindow(QWidget):
         self.is_result_displayed = False
         self.last_text = ""
         self.processing_operator = False
+        self._suppress_text_changed = False
         self._cleared_once = False
+        self._select_pending = False
 
-        # История и навигация
+        # История
         self.history = []
         self.history_index = -1
         self.current_input = ""
         self._load_history()
 
-        # Для перетаскивания окна
+        # Перетаскивание
         self.drag_pos = None
 
-        # Настройки позиции
+        # Позиция
         self.session_pos = None
         self._load_settings()
 
+        # Переиспользуемый таймер для отложенного выделения
+        self._select_timer = QTimer(self)
+        self._select_timer.setSingleShot(True)
+        self._select_timer.setInterval(0)
+        self._select_timer.timeout.connect(self._apply_selection_now)
+
+    # ------------------------------------------------------------------
+    # Настройки
+    # ------------------------------------------------------------------
     def _load_settings(self):
-        """Загружает сохраненную позицию окна."""
         if not CONFIG_FILE.exists():
             return
         try:
@@ -596,8 +575,13 @@ class MiniCalcWindow(QWidget):
             pass
 
     def _save_settings(self):
-        """Сохраняет позицию окна."""
-        data = {"window_pos": [self.x(), self.y()]}
+        data = {}
+        if CONFIG_FILE.exists():
+            try:
+                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data["window_pos"] = [self.x(), self.y()]
         try:
             CONFIG_FILE.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -606,8 +590,10 @@ class MiniCalcWindow(QWidget):
         except Exception:
             pass
 
+    # ------------------------------------------------------------------
+    # История
+    # ------------------------------------------------------------------
     def _load_history(self):
-        """Загружает историю из файла."""
         if HISTORY_FILE.exists():
             try:
                 with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
@@ -618,7 +604,6 @@ class MiniCalcWindow(QWidget):
             self.history = []
 
     def _save_history(self):
-        """Сохраняет историю в файл."""
         try:
             with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.history[-100:], f, ensure_ascii=False, indent=2)
@@ -626,7 +611,6 @@ class MiniCalcWindow(QWidget):
             pass
 
     def _add_to_history(self, text: str):
-        """Добавляет запись в историю."""
         if text and text not in self.history:
             self.history.append(text)
             if len(self.history) > 100:
@@ -636,18 +620,15 @@ class MiniCalcWindow(QWidget):
             self.current_input = ""
 
     def show_history(self):
-        """Показывает диалог истории."""
         if not self.history:
-            QMessageBox.information(
-                self, "История",
-                "История вычислений пуста.",
-                QMessageBox.Ok
-            )
+            QMessageBox.information(self, "История", "История вычислений пуста.", QMessageBox.Ok)
             return
 
         dialog = HistoryDialog(self.history, self)
         if dialog.exec_() == QDialog.Accepted and dialog.selected_item:
+            self._suppress_text_changed = True
             self.input_field.setText(dialog.selected_item)
+            self._suppress_text_changed = False
             self.input_field.setFocus()
             self.input_field.setCursorPosition(len(dialog.selected_item))
             if '=' in dialog.selected_item:
@@ -657,63 +638,119 @@ class MiniCalcWindow(QWidget):
                     self.last_result = parts[1].strip()
                     self.is_result_displayed = True
                     self.last_text = dialog.selected_item
+                    self.input_field.set_pending_clear(True)
+                    self._select_pending = True
+                    self._select_timer.start()
+            else:
+                self.is_result_displayed = False
+                self.last_text = dialog.selected_item
+                self.input_field.set_pending_clear(False)
 
     def hide_to_tray(self):
-        """Прячет окно в трей."""
         self._save_settings()
         self.hide()
 
+    def _apply_selection_now(self):
+        """Безопасное отложенное выделение — без raise/activateWindow."""
+        try:
+            f = self.input_field
+            if f is None:
+                return
+            f.setFocus(Qt.OtherFocusReason)
+            f.selectAll()
+        except (RuntimeError, AttributeError):
+            pass
+
+    # ------------------------------------------------------------------
+    # Восстановление полного текста результата (для операторов)
+    # ------------------------------------------------------------------
+    def restore_result_text(self):
+        """
+        Вызывается при вводе оператора на «свежем» результате.
+        Восстанавливает 'выражение=результат' и сбрасывает флаг
+        запланированного выделения, чтобы следующий textChanged
+        (от дописанного оператора) отработал штатно.
+        """
+        if self.last_expression and self.last_result:
+            full = f"{self.last_expression}={self.last_result}"
+            self._select_pending = False
+            self._suppress_text_changed = True
+            self.input_field.setText(full)
+            self._suppress_text_changed = False
+            self.last_text = full
+            self.input_field.setCursorPosition(len(full))
+
+    # ------------------------------------------------------------------
+    # Обработка изменения текста
+    # ------------------------------------------------------------------
     def on_text_changed(self, text: str):
-        """Обрабатывает изменение текста в поле ввода."""
+        if self._suppress_text_changed:
+            return
         if self.processing_operator:
             return
 
-        # Если результат НЕ отображается — просто обновляем
+        # Если запланировано выделение — применим его в следующий тик
+        if self._select_pending:
+            self._select_pending = False
+            self._select_timer.start()
+            return
+
         if not self.is_result_displayed:
             self.last_text = text
             return
 
-        # Если текст не изменился — выходим
         if text == self.last_text:
+            return
+
+        if not text:
+            self.is_result_displayed = False
+            self.last_text = text
             return
 
         cursor_pos = self.input_field.cursorPosition()
 
-        # Логика: если добавлен оператор после результата — добавляем его к результату
-        # Пример: "5+5=10" → "10+", "10-", "10*", "10/", "10%", "10^"
+        # Добавление оператора после результата — результат + оператор
         if len(text) > len(self.last_text):
-            # Новое добавление > 0 символов
             added = text[len(self.last_text):]
             if added in '+-*/%^' and self.last_result is not None:
-                # Пользователь добавил оператор после результата
                 self.processing_operator = True
                 new_text = f"{self.last_result}{added}"
+                self._suppress_text_changed = True
                 self.input_field.setText(new_text)
+                self._suppress_text_changed = False
                 self.is_result_displayed = False
                 self.last_text = new_text
                 self.input_field.setCursorPosition(len(new_text))
                 self.processing_operator = False
                 return
 
-        # Если `=` есть в тексте и он **не в конце** — удаляем результат
-        # Пример: "5+5=10" → "5+5=1" → "5+5"
+        # Результат зафиксирован (Enter, _pending_clear = False) —
+        # пользователь редактирует его как обычный текст.
+        if not self.input_field._pending_clear:
+            self.is_result_displayed = False
+            self.last_text = text
+            return
+
         if '=' in text:
             eq_pos = text.rfind('=')
             if eq_pos < len(text) - 1:
                 text_without_result = text[:eq_pos]
                 self.processing_operator = True
+                self._suppress_text_changed = True
                 self.input_field.setText(text_without_result)
+                self._suppress_text_changed = False
                 self.is_result_displayed = False
                 self.last_text = text_without_result
                 self.input_field.setCursorPosition(cursor_pos)
                 self.processing_operator = False
                 return
 
-        # Если `=` нет — удаляем результат (например, стёрли всё после `=`)
         if '=' not in text:
             self.processing_operator = True
             if self.last_expression:
+                self._suppress_text_changed = True
                 self.input_field.setText(self.last_expression)
+                self._suppress_text_changed = False
                 self.is_result_displayed = False
                 self.last_text = self.last_expression
                 if cursor_pos > len(self.last_expression):
@@ -724,13 +761,10 @@ class MiniCalcWindow(QWidget):
 
         self.last_text = text
 
+    # ------------------------------------------------------------------
+    # Нормализация и вычисление
+    # ------------------------------------------------------------------
     def _normalize_expression(self, expression: str) -> str:
-        """
-        Нормализует выражение для вычисления:
-        - Удаляет пробелы из чисел (разрядность)
-        - Заменяет запятую на точку в числах
-        - Заменяет ^ на **
-        """
         if not expression:
             return expression
 
@@ -742,17 +776,17 @@ class MiniCalcWindow(QWidget):
             ch = expression[i]
 
             if ch == ' ':
-                if i > 0 and i < length - 1:
-                    prev = expression[i-1]
-                    next_ch = expression[i+1]
+                if 0 < i < length - 1:
+                    prev = expression[i - 1]
+                    next_ch = expression[i + 1]
                     if prev.isdigit() and next_ch.isdigit():
                         i += 1
                         continue
                 result.append(ch)
             elif ch == ',':
-                if i > 0 and i < length - 1:
-                    prev = expression[i-1]
-                    next_ch = expression[i+1]
+                if 0 < i < length - 1:
+                    prev = expression[i - 1]
+                    next_ch = expression[i + 1]
                     if prev.isdigit() and next_ch.isdigit():
                         result.append('.')
                         i += 1
@@ -766,31 +800,20 @@ class MiniCalcWindow(QWidget):
 
         return ''.join(result)
 
-    def _safe_eval(self, expression: str) -> tuple:
-        """
-        Безопасно вычисляет математическое выражение.
-        Возвращает (результат, ошибка)
-        """
+    def _safe_eval(self, expression: str):
         if not expression or not expression.strip():
             return None, ""
 
         expr = expression.strip()
         expr = self._normalize_expression(expr)
 
+        if len(expr) > 500:
+            return None, "Ошибка: выражение слишком длинное"
+
         allowed = set("0123456789+-*/().% \t")
         for ch in expr:
             if ch not in allowed:
                 return None, f"Ошибка: недопустимый символ '{ch}'"
-
-        # Поддержка % как процент от предыдущего операнда
-        # Сценарии:
-        #   "X%"      → X/100
-        #   "A+B%"    → A + (B/100 * A)
-        #   "A-B%"    → A - (B/100 * A)
-        #   "A*B%"    → A * (B/100)
-        #   "A/B%"    → A / (B/100)
-        #   "A+B%C"   → (A+B) * C/100
-        #   "A%B+C"   → (A/100) + B + C
 
         pattern = r'^(.+?)([\+\-\*\/])(\d+(?:\.\d+)?)%$'
         match = re.match(pattern, expr)
@@ -813,15 +836,11 @@ class MiniCalcWindow(QWidget):
             except Exception:
                 return None, "Ошибка: неверное выражение с процентом"
         else:
-            # 🔍 Проверим "X%" → X/100
             match2 = re.match(r'^(\d+(?:\.\d+)?)%$', expr)
             if match2:
                 num = float(match2.group(1))
                 result = num / 100
             else:
-                # Пробуем просто заменить "число%" → "*число/100", если % не в начале
-                # Например: "5%+10" → "*5/100+10", но это "0.05+10"
-                # Заменим только если % не в начале и перед ним цифра
                 expr_for_eval = re.sub(r'(?<=\d)%', r'/100', expr)
                 try:
                     result = eval(expr_for_eval, {"__builtins__": {}}, {})
@@ -832,7 +851,6 @@ class MiniCalcWindow(QWidget):
                 except Exception as e:
                     return None, f"Ошибка: {str(e)}"
 
-        # Обработка результата (то же, что и раньше)
         try:
             if isinstance(result, float):
                 if result.is_integer():
@@ -850,84 +868,106 @@ class MiniCalcWindow(QWidget):
         except Exception as e:
             return None, f"Ошибка: {str(e)}"
 
+    # ------------------------------------------------------------------
+    # Вычисление по Enter
+    # ------------------------------------------------------------------
     def calculate(self):
-        """Вычисляет выражение и показывает результат."""
         current_text = self.input_field.text().strip()
-        # Если поле пустое — ничего не делаем
         if not current_text:
             return
-        # --- Сценарий: уже отображается результат (например, "10" или "5+5=10") ---
+
+        # --- Уже показан результат ---
         if self.is_result_displayed:
-            # Если поле содержит только результат (число), и Enter нажат → просто оставляем результат
+            # Чистый результат (без '='), нажат Enter → фиксируем
             if current_text == self.last_result and '=' not in current_text:
-                # Уже на результате → ничего не меняем, просто фокус и позиция
+                self.input_field.deselect()
+                self.input_field.set_pending_clear(False)
                 self.input_field.setCursorPosition(len(current_text))
-                self.is_result_displayed = True  # оставляем как есть
                 self.last_text = current_text
+                self._select_pending = False
                 return
 
-            # Если поле содержит выражение с результатом (например, "5+5=10") → убираем "=10"
+            # Есть '=', нажат Enter → оставляем только результат
             if '=' in current_text:
-                # Делим на выражение и результат
                 parts = current_text.split('=', 1)
                 expr_part = parts[0].strip()
                 if expr_part == self.last_expression:
-                    # Это именно тот случай: выражение совпадает, результат совпадает
-                    # → убираем "=..." и оставляем только результат
                     self.processing_operator = True
+                    self._suppress_text_changed = True
                     self.input_field.setText(self.last_result)
-                    self.is_result_displayed = False  # Теперь мы на "чистом" результате
+                    self._suppress_text_changed = False
+                    self.is_result_displayed = True
                     self.last_text = self.last_result
                     self.input_field.setCursorPosition(len(self.last_result))
                     self.processing_operator = False
+                    self.input_field.deselect()
+                    self.input_field.set_pending_clear(False)
+                    self._select_pending = False
                     return
 
-        # --- Сценарий: новое выражение или поле с уже вычисленным результатом (но без =) ---
+        # --- Есть '=' в тексте, но не в режиме результата ---
         if '=' in current_text:
-            # Обработка, если в поле уже есть выражение=результат (но не отображается как результат)
             parts = current_text.split('=', 1)
             if len(parts) == 2:
                 expr_to_eval = parts[0].strip()
                 result, error = self._safe_eval(expr_to_eval)
                 if result and not error:
                     full_text = f"{expr_to_eval}={result}"
+                    self._suppress_text_changed = True
                     self.input_field.setText(full_text)
+                    self._suppress_text_changed = False
                     self.last_expression = expr_to_eval
                     self.last_result = result
                     self.is_result_displayed = True
                     self.last_text = full_text
                     self._add_to_history(full_text)
-                    self.input_field.setCursorPosition(len(full_text))
+                    self.input_field.setFocus()
+                    self.input_field.set_pending_clear(True)
+                    self._select_pending = True
+                    self._select_timer.start()
                     return
                 else:
-                    # Ошибка в выражении
+                    self._suppress_text_changed = True
                     self.input_field.setText(error or "Ошибка")
+                    self._suppress_text_changed = False
                     self.is_result_displayed = False
                     self.last_text = error or "Ошибка"
+                    self.input_field.setFocus()
+                    self.input_field.set_pending_clear(False)
+                    self._select_pending = True
+                    self._select_timer.start()
                     return
 
         # --- Обычное вычисление ---
         result, error = self._safe_eval(current_text)
-
         if result and not error:
             self.last_expression = current_text
             self.last_result = result
-
             full_text = f"{current_text}={result}"
+            self._suppress_text_changed = True
             self.input_field.setText(full_text)
+            self._suppress_text_changed = False
             self.is_result_displayed = True
             self.last_text = full_text
             self._add_to_history(full_text)
-            self.input_field.setCursorPosition(len(full_text))
-        else:
-            self.input_field.setText(error or "Ошибка")
             self.input_field.setFocus()
-            self.input_field.selectAll()
+            self.input_field.set_pending_clear(True)
+            self._select_pending = True
+            self._select_timer.start()
+        else:
+            self._suppress_text_changed = True
+            self.input_field.setText(error or "Ошибка")
+            self._suppress_text_changed = False
             self.is_result_displayed = False
             self.last_text = error or "Ошибка"
+            self.input_field.setFocus()
+            self.input_field.set_pending_clear(False)
+            self._select_pending = True
+            self._select_timer.start()
 
     def clear_input(self):
-        """Очищает поле ввода."""
+        """Полная очистка поля и сброс состояния."""
+        self._suppress_text_changed = True
         self.last_result = None
         self.last_expression = None
         self.is_result_displayed = False
@@ -935,25 +975,27 @@ class MiniCalcWindow(QWidget):
         self.processing_operator = False
         self.history_index = -1
         self.current_input = ""
-        self.input_field.setFocus()
-        self.input_field.selectAll()
+        self._select_pending = False
+        self.input_field._pending_clear = False
         self.input_field.clear()
+        self._suppress_text_changed = False
+        self.input_field.setFocus()
         self._cleared_once = False
 
+    # ------------------------------------------------------------------
+    # Клавиши окна
+    # ------------------------------------------------------------------
     def keyPressEvent(self, event):
-        """Обработка клавиш для всего окна."""
         key = event.key()
 
         if key == Qt.Key_Escape:
-            # Первый Escape — очистка, второй — сворачивание
             if not self._cleared_once:
                 self.clear_input()
-                self._cleared_once = True  # ← флаг, что очистили
+                self._cleared_once = True
             else:
-                self.hide_to_tray()  # ← второй раз — сворачиваем
+                self.hide_to_tray()
             return
 
-        # Стрелки для навигации по истории
         if key == Qt.Key_Down:
             self.navigate_history_down()
             return
@@ -964,59 +1006,49 @@ class MiniCalcWindow(QWidget):
         super().keyPressEvent(event)
 
     def navigate_history_down(self):
-        """
-        Навигация по истории вниз.
-        Загружает от последнего к первому.
-        """
         if not self.history:
             return
-
-        # Если не в режиме просмотра истории, сохраняем текущий ввод
         if self.history_index == -1:
             self.current_input = self.input_field.text()
-            # Начинаем с последней записи (индекс 0 в обратном порядке)
             self.history_index = 0
         else:
-            # Перемещаемся к следующей более ранней записи
             self.history_index += 1
             if self.history_index >= len(self.history):
-                # Достигли конца - выходим из режима истории
                 self.history_index = -1
+                self._suppress_text_changed = True
                 self.input_field.setText(self.current_input)
+                self._suppress_text_changed = False
                 self.input_field.setFocus()
                 self.input_field.setCursorPosition(len(self.current_input))
                 return
 
-        # Показываем запись из истории (индекс идет с конца)
+        self._suppress_text_changed = True
         self.input_field.setText(self.history[len(self.history) - 1 - self.history_index])
+        self._suppress_text_changed = False
         self.input_field.setFocus()
         self.input_field.setCursorPosition(len(self.input_field.text()))
 
     def navigate_history_up(self):
-        """
-        Навигация по истории вверх.
-        Загружает от первого к последнему (обратно).
-        """
         if not self.history or self.history_index == -1:
             return
-
-        # Перемещаемся к более поздней записи
         self.history_index -= 1
         if self.history_index < 0:
-            # Достигли начала - выходим из режима истории
             self.history_index = -1
+            self._suppress_text_changed = True
             self.input_field.setText(self.current_input)
+            self._suppress_text_changed = False
             self.input_field.setFocus()
             self.input_field.setCursorPosition(len(self.current_input))
             return
 
-        # Показываем запись из истории (индекс идет с конца)
+        self._suppress_text_changed = True
         self.input_field.setText(self.history[len(self.history) - 1 - self.history_index])
+        self._suppress_text_changed = False
         self.input_field.setFocus()
         self.input_field.setCursorPosition(len(self.input_field.text()))
 
     # ------------------------------------------------------------------
-    # Перетаскивание окна
+    # Перетаскивание
     # ------------------------------------------------------------------
     def mousePressEvent(self, event: QMouseEvent):
         if event.button() == Qt.LeftButton:
@@ -1029,29 +1061,21 @@ class MiniCalcWindow(QWidget):
             event.accept()
 
     def closeEvent(self, event: QCloseEvent):
-        """При закрытии окна сохраняем позицию и прячем в трей."""
         self._save_settings()
         self.hide()
         event.ignore()
 
-    def hideEvent(self, event):
-        self._pending_toggle = False
-        self._cleared_once = False
-        super().hideEvent(event)
-
     def showEvent(self, event):
-        """При показе окна фокус на поле ввода."""
-        # Если отображается результат, устанавливаем флаг для очистки при вводе
+        # Флаг замены — по состоянию результата
         if self.is_result_displayed and self.input_field.text():
             self.input_field.set_pending_clear(True)
-            # Выделяем весь текст
-            self.input_field.selectAll()
         else:
             self.input_field.set_pending_clear(False)
-        
+
         self.input_field.setFocus()
-        if not self.is_result_displayed:
-            self.input_field.selectAll()
+        self._select_pending = True
+        self._select_timer.start()
+
         self.history_index = -1
         self.current_input = ""
         self._cleared_once = False
@@ -1072,7 +1096,6 @@ class CalcTrayApp(QWidget):
         self.calc_hotkey_enabled = True
         self._last_toggle = 0.0
 
-        # Создаем окно калькулятора
         self.calc_window = MiniCalcWindow()
         self.calc_window.hide()
 
@@ -1089,7 +1112,7 @@ class CalcTrayApp(QWidget):
         except Exception:
             pass
 
-        # Таймер для контроля NumLock (проверяем каждую секунду)
+        # Таймер для контроля NumLock
         self.numlock_timer = QTimer()
         self.numlock_timer.setInterval(1000)
         self.numlock_timer.timeout.connect(self._check_numlock)
@@ -1108,9 +1131,13 @@ class CalcTrayApp(QWidget):
             pass
 
     def _save_settings(self):
-        data = {
-            "calc_hotkey_enabled": self.calc_hotkey_enabled,
-        }
+        data = {}
+        if CONFIG_FILE.exists():
+            try:
+                data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+        data["calc_hotkey_enabled"] = self.calc_hotkey_enabled
         try:
             CONFIG_FILE.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
@@ -1120,7 +1147,7 @@ class CalcTrayApp(QWidget):
             pass
 
     def _check_numlock(self):
-        """Периодически проверяет и включает NumLock."""
+        """Безусловная проверка — NumLock всегда включён."""
         if self.running:
             set_numlock_on()
 
@@ -1152,7 +1179,6 @@ class CalcTrayApp(QWidget):
 
         menu.addSeparator()
 
-        # Автозагрузка
         self.autostart_action = QAction("Автозагрузка", self)
         self.autostart_action.setCheckable(True)
         self.autostart_action.setChecked(is_autostart_enabled())
@@ -1174,8 +1200,9 @@ class CalcTrayApp(QWidget):
         self.tray.show()
 
     def _on_tray_activated(self, reason):
-        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.Context):
-            # Обновляем состояние автозагрузки
+        if reason == QSystemTrayIcon.Trigger:
+            self._do_mouse_toggle()
+        elif reason == QSystemTrayIcon.Context:
             self.autostart_action.setChecked(is_autostart_enabled())
             self.tray.contextMenu().popup(QtGui.QCursor.pos())
 
@@ -1183,23 +1210,14 @@ class CalcTrayApp(QWidget):
     # Автозагрузка
     # ------------------------------------------------------------------
     def _toggle_autostart(self):
-        """Включает/выключает автозагрузку."""
         if is_autostart_enabled():
-            # Удаляем из автозагрузки
             if remove_from_autostart():
                 self.autostart_action.setChecked(False)
-                QMessageBox.information(
-                    self, APP_NAME,
-                    "Программа удалена из автозагрузки."
-                )
+                QMessageBox.information(self, APP_NAME, "Программа удалена из автозагрузки.")
             else:
-                QMessageBox.warning(
-                    self, APP_NAME,
-                    "Не удалось удалить программу из автозагрузки."
-                )
+                QMessageBox.warning(self, APP_NAME, "Не удалось удалить программу из автозагрузки.")
                 self.autostart_action.setChecked(True)
         else:
-            # Добавляем в автозагрузку
             if add_to_autostart():
                 self.autostart_action.setChecked(True)
                 QMessageBox.information(
@@ -1216,7 +1234,7 @@ class CalcTrayApp(QWidget):
                 self.autostart_action.setChecked(False)
 
     # ------------------------------------------------------------------
-    # Слоты
+    # Выход
     # ------------------------------------------------------------------
     def _exit(self):
         self.running = False
@@ -1230,93 +1248,74 @@ class CalcTrayApp(QWidget):
         QApplication.quit()
 
     # ------------------------------------------------------------------
-    # Клавиатура: хук NumLock
+    # Хук клавиатуры
     # ------------------------------------------------------------------
     def _on_key(self, event):
         if not self.running:
             return
-
         if event.name != "num lock":
+            return
+        # Только down — иначе двойное срабатывание
+        if getattr(event, "event_type", "down") != "down":
             return
 
         if is_programmatic_numlock():
-            set_programmatic_flag(False)
             return
 
         now = time.time()
-        if now - self._last_toggle < 0.1:
+        if now - self._last_toggle < 0.15:
             return
         self._last_toggle = now
 
+        # emit потокобезопасен — Qt сам поставит вызов в очередь главного потока
         self._sig_toggle.emit()
-        QTimer.singleShot(20, set_numlock_on)
 
     # ------------------------------------------------------------------
-    # Логика показа/скрытия калькулятора
+    # Показ/скрытие
     # ------------------------------------------------------------------
+    def _show_calc(self):
+        w = self.calc_window
+        w.show()
+        w.raise_()
+        force_foreground(int(w.winId()))
+        w.activateWindow()
+        w.input_field.setFocus()
+
+        if w.is_result_displayed and w.input_field.text():
+            w.input_field.set_pending_clear(True)
+        w._select_pending = True
+        w._select_timer.start()
+
     def _do_mouse_toggle(self):
-        """Переключение окна по клику мышкой."""
-        window = self.calc_window
-        if window.isVisible():
-            window.hide_to_tray()
+        w = self.calc_window
+        if w.isVisible():
+            w.hide_to_tray()
         else:
-            window.show()
-            window.raise_()
-            window.activateWindow()
-            window.input_field.setFocus()
-            
-            # Если есть результат - выделяем и устанавливаем флаг очистки
-            if window.is_result_displayed and window.input_field.text():
-                window.input_field.set_pending_clear(True)
-                window.input_field.selectAll()
-            elif not window.is_result_displayed:
-                window.input_field.selectAll()            
+            self._show_calc()
 
     def _do_toggle(self):
-        window = self.calc_window
+        w = self.calc_window
 
-        if not window.isVisible():
-            # Если окно скрыто → ПОКАЗЫВАЕМ
-            window.show()
-            window.raise_()
-            window.activateWindow()
-            window.input_field.setFocus()
-            window.input_field.selectAll()
-            
-            # Если есть результат - устанавливаем флаг очистки
-            if window.is_result_displayed and window.input_field.text():
-                window.input_field.set_pending_clear(True)
-                window.input_field.selectAll()            
+        if not w.isVisible():
+            self._show_calc()
         else:
-            if window.isActiveWindow():
-                # Если окно видимо И активно → СКРЫВАЕМ в трей
-                window._save_settings()
-                window.hide()
+            if w.isActiveWindow():
+                w._save_settings()
+                w.hide()
             else:
-                # Если окно видимо, но НЕ активно → поднимаем наверх
-                window.raise_()
-                window.activateWindow()
-                window.input_field.setFocus()
-                
-                # Если есть результат - выделяем и устанавливаем флаг очистки
-                if window.is_result_displayed and window.input_field.text():
-                    window.input_field.set_pending_clear(True)
-                    window.input_field.selectAll()
-                elif not window.is_result_displayed:
-                    window.input_field.selectAll()                
+                w.raise_()
+                force_foreground(int(w.winId()))
+                w.activateWindow()
+                w.input_field.setFocus()
+                if w.is_result_displayed and w.input_field.text():
+                    w.input_field.set_pending_clear(True)
+                w._select_pending = True
+                w._select_timer.start()
 
-    def _on_tray_activated(self, reason):
-        if reason == QSystemTrayIcon.Trigger:
-            self._do_mouse_toggle()
-        elif reason == QSystemTrayIcon.Context:
-            self.autostart_action.setChecked(is_autostart_enabled())
-            self.tray.contextMenu().popup(QtGui.QCursor.pos())
 
 # ---------------------------------------------------------------------------
 # Диалог «О программе»
 # ---------------------------------------------------------------------------
-
-
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
